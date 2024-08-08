@@ -1,0 +1,6 @@
+Слушаем на tcp порте 9001...
+кеш обновлён:    URL = '/img.razrisyika.ru/kart/64/252763-gornyy-peyzazh-9.jpg'
+попадание в кеш: URL = '/img.razrisyika.ru/kart/64/252763-gornyy-peyzazh-9.jpg'
+хост 'www.google.com' забанен
+хост 'yandex.ru' забанен
+попадание в кеш: URL = '/img.razrisyika.ru/kart/64/252763-gornyy-peyzazh-9.jpg'
