@@ -1,20 +1,36 @@
 
 import threading
+from check_sums import *
 # import time
 
 
 
 class rdt_segment:
-    def __init__(self, segment_type: int, segment_number: int, data: bytes):
+    def __init__(self, segment_type: int, segment_number: int, data: bytes, checksum=None):
         self.segment_type = segment_type
         self.segment_number = segment_number
         self.data = data
+        self.checksum = checksum if checksum is not None else self.calc_checksum()
+
+    def calc_checksum(self):
+        return make_checksum(self.to_bytes_no_checksum())
+    
+    def check_checksum(self):
+        return self.calc_checksum() == self.checksum
 
     def from_bytes(bytes: bytes):
-        return rdt_segment(int(bytes[0]), int(bytes[1]), bytes[2:])
+        return rdt_segment(
+            int(bytes[0]), 
+            int(bytes[1]), 
+            bytes[2:-2], 
+            int.from_bytes(bytes[-2:], 'little')
+        )
+    
+    def to_bytes_no_checksum(self):
+        return self.segment_type.to_bytes(1, 'little') + self.segment_number.to_bytes(1, 'little') + self.data
     
     def to_bytes(self):
-        return self.segment_type.to_bytes(1, 'little') + self.segment_number.to_bytes(1, 'little') + self.data
+        return self.to_bytes_no_checksum() + self.checksum.to_bytes(2, 'little')
 
 
     def to_str(self):
@@ -23,7 +39,15 @@ class rdt_segment:
 
 
 class rdt_socket:
-    """ Принимает сообщения и отправляет ACK-и """
+    """
+    Сокет для надёжной передачи датаграмм (сообщений)
+    Имея две функции send_f и recv_f для ненадёжных отправки и получения
+    сообщений, реализованы методы .send и .recv для надёжной доставки.
+
+    Сокет поддерживает сопроцесс отвечающий за чтение из сокета, и сопроцесс для
+    таймера для переотправки (если нужно). Они уничтожаются только при завершении главного 
+    процесса.
+    """
     def __init__(self, send_f, recv_f, timeout):
         self.send_f = send_f
         self.recv_f = recv_f
@@ -45,14 +69,14 @@ class rdt_socket:
 
         # Обрабатывает получение одного сегмента
         def on_segment_recieve(s: rdt_segment):
-            print(f'receive {s.to_str()}')
+            # print(f'receive {s.to_str()}')
 
             if s.segment_type == 0: # сегмент с данными
                 if s.segment_number == self.recv_number: # сегмент который мы ждали добавляем в очередь и оповещаем об этом
                     self.recv_queue.append(s.data)
                     self.segment_received.notify_all()
                     self.recv_number = 1 - self.recv_number
-                    print('notify')
+                    # print('notify')
                 self.__send_ack(s.segment_number)   # в любом случае шлём ACK
 
             elif s.segment_type == 1: # ACK сегмент 
@@ -74,7 +98,7 @@ class rdt_socket:
                     # в этом случае просто завершаем слушающий поток
                     self.closed = True
                     self.segment_received.notify_all()
-                    print('notify')
+                    # print('notify')
                     # exit(0)
                 
    
@@ -84,6 +108,8 @@ class rdt_socket:
                 # Ждём следующего прихода сообщения, потом обрабатываем его
                 s: bytes = self.recv_f()
                 s: rdt_segment = rdt_segment.from_bytes(s)
+                if not s.check_checksum():
+                    continue
                 with self.lock:
                     on_segment_recieve(s)
 
@@ -98,12 +124,12 @@ class rdt_socket:
             end = lambda: empty() and self.closed
             if empty() and not end():
                 # self.segment_received.wait_for(lambda: not empty() or end())
-                print('recv wait')
+                # print('recv wait')
                 self.segment_received.wait()
             if end():
-                print('recv end')
+                # print('recv end')
                 # self.receive_holder_thread.join()
-                print('recv join and return none')
+                # print('recv join and return none')
                 return None
             data = self.recv_queue[0]
             self.recv_queue = self.recv_queue[1:]
@@ -129,11 +155,11 @@ class rdt_socket:
                 s = rdt_segment(0, self.send_number, self.send_queue[0])
             self.timeout_thread = threading.Timer(self.timeout, lambda: self.__send_top())
             self.timeout_thread.start()
-            print(f'send {s.to_str()}')
+            # print(f'send {s.to_str()}')
             self.send_f(s.to_bytes())
 
     def __send_ack(self, segment_number):
         with self.lock:
             s = rdt_segment(1, segment_number, b'')
-            print(f'send ack {s.to_str()}')
+            # print(f'send ack {s.to_str()}')
             self.send_f(s.to_bytes())
