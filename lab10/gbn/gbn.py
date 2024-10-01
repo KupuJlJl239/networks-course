@@ -65,12 +65,13 @@ class gbn_socket:
     * .send(data: bytes) - надёжная отправка (неблокирующая)
     * .recv() -> bytes|None - надёжное получение (блокирующее)
     """
-    def __init__(self, send_f, recv_f, timeout, N):
+    def __init__(self, send_f, recv_f, timeout, N, callbacks=None):
         self.send_f = send_f
         self.recv_f = recv_f
         self.next_number = 0
         self.timeout = timeout
         self.N = N
+        self.callbacks = callbacks if callbacks is not None else dict()
 
         self.lock = threading.RLock()
         self.segment_received = threading.Condition(self.lock)
@@ -86,7 +87,7 @@ class gbn_socket:
 
 
         # Обрабатывает получение одного сегмента
-        def on_segment_recieve(s: gbn_segment):
+        def on_segment_receive(s: gbn_segment):
             """
             обрабатывает получение одного сегмента
             есть 3 типа сегментов:
@@ -97,9 +98,12 @@ class gbn_socket:
             # print(f'receive {s.to_str()}')
             if s.segment_type == 0: # сегмент с данными
                 if s.segment_number == self.recv_number: # сегмент который мы ждали добавляем в очередь и оповещаем об этом
+                    self._run_callback("data_good_receive", s)
                     self.recv_queue.append(s.data)
                     self.segment_received.notify_all()
                     self.recv_number = (self.recv_number + 1) % 256
+                else:
+                    self._run_callback("data_bad_receive", s)
                 self._send_ack(self.recv_number)   # в любом случае шлём ACK c номером следующего ожидаемого сегмента
 
             elif s.segment_type == 1: # ACK сегмент 
@@ -114,12 +118,14 @@ class gbn_socket:
                 #   * подтверждение не затрагивает ожидаемый диапазон => ничего не делаем
 
                 if idx == 0:
-                    #   * подтверждение пришло повторно
+                    #   * подтверждение пришло повторно   
+                    self._run_callback("ack_repeat_receive", s)   
                     self._set_timeout(cancel=True)  # переустанавливаем таймаут
                     self._send_again()  # посылаем всё заново
             
                 elif 0 < idx and idx <= self.sended:
                     #   * подтверждение подтвердило какие-то пакеты
+                    self._run_callback("ack_good_receive", s)
                     self.send_queue = self.send_queue[idx:] # убираем подтверждённые сегменты из очереди
                     self.sended -= idx
                     self.send_number = (self.send_number + idx) % 256  # сдвигаем окно
@@ -127,7 +133,7 @@ class gbn_socket:
 
                 else:
                     #   * подтверждение не затрагивает ожидаемый диапазон
-                    pass
+                    self._run_callback("ack_bad_receive", s)
 
             elif s.segment_type == 2: # закрытие соединения (другая сторона больше не будет отправлять) 
                 if s.segment_number == self.recv_number: # сегмент тот который мы ждали
@@ -140,23 +146,23 @@ class gbn_socket:
         def receive_holder_f():
             """
             ждёт новых сообщений в цикле, проверяет контрольную сумму 
-            и отдаёт на обработку функции on_segment_recieve
+            и отдаёт на обработку функции on_segment_receive
             """
             while True:
                 # Ждём следующего прихода сообщения, потом обрабатываем его
-                # print('wait for recieve')
+                # print('wait for receive')
                 s: bytes = self.recv_f()
                 s: gbn_segment = gbn_segment.from_bytes(s)
                 if not s.check_checksum():
                     # print('checksum ERROR')
                     continue
                 with self.lock:
-                    on_segment_recieve(s)
+                    on_segment_receive(s)
         
         self.timeout_thread = None
 
         # отдельный поток, занимающийся получением UDP пакетов
-        self.receive_holder_thread = threading.Thread(target=receive_holder_f, name='RDT holder', daemon=True)
+        self.receive_holder_thread = threading.Thread(target=receive_holder_f, name='RDT holder', daemon=False)
         self.receive_holder_thread.start()
 
 
@@ -255,3 +261,14 @@ class gbn_socket:
         if self.timeout_thread is not None:
             self.timeout_thread.cancel()
             self.timeout_thread = None
+
+    def _run_callback(self, name, *args):
+        """
+        запускает callback с данным имененем и данными аргументами,
+        если такой callback вообще существует
+        """
+        callback = self.callbacks.get(name)
+        # print(self.callbacks.keys(), name)
+        
+        if callback is not None:
+            callback(self, *args)

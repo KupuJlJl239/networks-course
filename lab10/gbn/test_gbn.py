@@ -1,31 +1,5 @@
 from gbn import *
-import socket
-import random
-import sys
-
-
-
-def create_udp_socket(port):
-    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udp_socket.bind(("0.0.0.0", port))
-    return udp_socket
-
-def create_recv(udp_socket: socket.socket, addr, loss_probability):
-    def recv():
-        while(1):
-            data, _addr = udp_socket.recvfrom(1500)
-            if _addr == addr and random.random() > loss_probability:
-                return data
-    return recv
-
-
-def create_send(udp_socket: socket.socket, addr, loss_probability):
-    def send(data):
-        if random.random() > loss_probability:
-            udp_socket.sendto(data, addr)
-    return send
-
-
+from send_and_recv import *
 
 def main(): 
 
@@ -41,7 +15,7 @@ def main():
     send_2 = create_send(udp_socket_2, ("127.0.0.1", 50001), loss_prob)
     recv_2 = create_recv(udp_socket_2, ("127.0.0.1", 50001), loss_prob)
 
-    timeout = 1
+    timeout = 0.1
     print(f'Таймаут: {timeout} секунд')
 
     N = 4
@@ -51,7 +25,10 @@ def main():
     # Получаем 2 rdt сокета, связанных между собой в обе стороны
     # (благодаря верно указанным адресам в функциях send_* и recv_*)
     # По каждому пожно отправить порцию данных и получить от другого
-    rdt_socket_1 = gbn_socket(send_1, recv_1, timeout=timeout, N=N)
+    callbacks_1 = {
+        "ack_good_receive": lambda gbn, s: print(f'ack_good_receive {s.segment_number}'),
+    }
+    rdt_socket_1 = gbn_socket(send_1, recv_1, timeout=timeout, N=N, callbacks=None)
     rdt_socket_2 = gbn_socket(send_2, recv_2, timeout=timeout, N=N)
 
     # Будем передавать всё сегментами по 500 байт
@@ -64,6 +41,7 @@ def main():
 
     # Разделяем данные на сегменты размера segment_size
     segments = [data[segment_size*i:segment_size*(i+1)] for i in range(len(data) // segment_size + 1)]
+    # segments.append(None)
     # segments = [b'hello 1', b'hello 2', b'hello 3', b'hello 4', b'hello 5']
     # segments = [b'hello 1']
 
