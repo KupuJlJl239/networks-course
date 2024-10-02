@@ -21,15 +21,18 @@ class Router:
         dt: float, 
         timeout: float,
         udp_socket: socket.socket, 
-        neighbours
+        neighbours, 
+        callbacks
     ):
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
 
         self.ip = ip
         self.dt = dt
         self.timeout = timeout
         self.neighbours = neighbours
         self.udp_socket = udp_socket
+        self.callbacks = callbacks
+
         self.table = {self.ip: (None, 0)}
 
         self.udp_socket.settimeout(self.timeout)
@@ -86,16 +89,21 @@ class Router:
         """
         обрабатывает получение одного сообщения
         """
-        print(f'{self.ip} gets a message from {self.neighbours[addr]}')
+        # print(f'{self.ip} gets a message from {self.neighbours[addr]}')
+        changed = False
+
         for ip, length in msg:
             new_length = length + 1
             _, old_length = self._get_route(ip)
-            if new_length < old_length:
-                self._on_table_change()
-                print(f'now path from {self.ip} to {ip} is {new_length} hops')
+            if new_length < old_length:       
+                # print(f'now path from {self.ip} to {ip} is {new_length} hops')
+                # self._on_table_change()
                 self.table[ip] = (addr, new_length)
+                changed = True
 
-
+        if changed:
+            self._on_table_change()
+            
     def _get_route(self, ip):
         """
         возвращает информацию о маршруте до данного IP:
@@ -114,6 +122,7 @@ class Router:
         переставляет время поледнего изменения таблицы
         (должна вызываться при каждом изменении таблицы)
         """
+        self._run_callback("on_table_change")
         self.last_change_time = time.time()
 
 
@@ -124,19 +133,33 @@ class Router:
         if time.time() - self.last_change_time > self.timeout:
             exit(0)
 
+
     def print_table(self):
+        """
+        выводит текущую таблицу маршрутизации
+        """
         with self.lock:
             print(f'[target IP]\t[next hope IP]\t[hops to target]')
-            for ip, (addr, length) in self.table.items():
-                if addr is not None:
-                    print(f'{ip}\t\t{self.neighbours[addr]}\t\t{length}')
+            for ip, (addr, length) in sorted(self.table.items()):
+                next_hope_ip = self.neighbours[addr] if addr is not None else '    -    '
+                print(f'{ip}\t{next_hope_ip}\t\t{length}')
+
+
+    def _run_callback(self, name, *args):
+        """
+        вызывает callback с данным именем
+        """
+        if name in self.callbacks: 
+            self.callbacks[name](self, *args)
+
 
 
 def create_network(
     vertices, 
     edges,
     dt,
-    timeout
+    timeout, 
+    callbacks = dict()
 ) -> List[Router]:
     """
     создаёт сеть
@@ -153,7 +176,8 @@ def create_network(
         Router(
             ip=ip, dt=dt, timeout=timeout, 
             udp_socket=create_udp_socket(udp_port), 
-            neighbours=dict()
+            neighbours=dict(),
+            callbacks=callbacks
         )
         for udp_port, ip in vertices
     ]
@@ -169,18 +193,42 @@ def create_network(
 
 
 if __name__ == '__main__':
-    V = [(50000, 0), (50001, 1), (50002, 2), (50003, 3)]
-    E = [(0, 1), (1, 2), (2, 3)]
-    routers: List[Router] = create_network(V, E, dt=0.1, timeout=1)
 
+
+    # Определяем граф сети
+    V = [(50000, 'router_0'), (50001, 'router_1'), (50002, 'router_2'), (50003, 'router_3')]
+    E = [(0, 1), (1, 2), (2, 3)]
+
+    # Создаём callback, выводящий таблицу маршрутизации
+    global_lock = threading.Lock()
+    def on_table_change_callback(router: Router):
+        with global_lock:
+            print()
+            print(f'{router.ip}: изменилась таблица маршрутизации')
+            router.print_table()
+
+    # Создаём все маршрутизаторы, связывая их между собой
+    routers: List[Router] = create_network(
+        V, E, dt=0.1, timeout=1, 
+        callbacks={'on_table_change': on_table_change_callback}
+    )
+
+    # Запускаем из всех
     for r in routers:
         r.start()
 
+    # Ждём завершения всех
     for r in routers:
         r.join()
 
-    for r in routers:
-        print()
-        r.print_table()
 
-    
+    # Подводим итоги всех
+    print()
+    print('================================')
+    print('=======   RIP завершён   =======')
+    print('================================')
+
+    for i, r in enumerate(routers):
+        print()
+        print(f'{r.ip}: итоговая таблица маршрутизации')
+        r.print_table()
